@@ -12,6 +12,11 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filte
 from dotenv import load_dotenv
 from groq import Groq
 import google.generativeai as genai
+import io
+import matplotlib
+matplotlib.use('Agg') # Wajib untuk server/VPS
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # --- 1. KONFIGURASI ENV & CLIENT ---
 load_dotenv()
@@ -193,6 +198,84 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await msg.edit_text(f"❌ Gagal: {e}")
 
+
+# --- FITUR BARU: DATA ANALYST (PAL) ---
+async def run_analysis(query, df):
+    """
+    Fungsi ini mengubah Natural Language -> Python Code -> Eksekusi -> Hasil/Grafik
+    """
+    # 1. Siapkan Konteks Data (Strategi 3: Pre-Computation Schema)
+    # Kita berikan info kolom dan contoh data ke AI
+    buffer_info = io.StringIO()
+    df.info(buf=buffer_info)
+    schema_info = buffer_info.getvalue()
+    sample_data = df.head(3).to_markdown()
+    
+    # [BARU] Ambil tanggal hari ini untuk konteks "Kemarin/Hari ini"
+    today_str = datetime.now().strftime("%Y-%m-%d")
+
+    system_prompt = f"""
+    Kamu adalah Senior Data Analyst Python.
+    Waktu Saat Ini: {today_str} (Gunakan ini untuk menghitung 'kemarin', 'minggu lalu', dll).
+    
+    Tugas: Tulis kode Python untuk menganalisis DataFrame `df` berdasarkan pertanyaan user.
+    
+    INFO DATAFRAME:
+    {schema_info}
+    
+    CONTOH DATA:
+    {sample_data}
+    
+    ATURAN KODING (STRICT):
+    1. Variabel DataFrame bernama `df` sudah tersedia.
+    2. KONVERSI TANGGAL: Kolom 'tanggal' mungkin string. Wajib ubah dulu: 
+       `df['tanggal'] = pd.to_datetime(df['tanggal'], errors='coerce')`
+    3. Jika User minta GRAFIK: Akhiri dengan `plt.savefig('chart_output.png')` dan set `tipe_output = 'gambar'`.
+    4. Jika User minta ANGKA/TEKS: Simpan hasil string di `hasil_teks` dan set `tipe_output = 'teks'`.
+    5. FILTER WAKTU: Jika user tanya "Kemarin", filter `df['tanggal'] == pd.Timestamp('{today_str}') - pd.Timedelta(days=1)`.
+    6. HANYA RETURN KODE PYTHON. Tanpa markdown.
+    """
+
+    # 2. Generate Kode via Groq (Llama 3 70B sangat jago coding)
+    # Kita pakai Groq karena cepat.
+    prompt_full = f"Pertanyaan User: {query}\n\nTulis kodenya sekarang:"
+    
+    completion = await asyncio.to_thread(
+        groq_client.chat.completions.create,
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt_full}
+        ],
+        temperature=0
+    )
+    
+    code_raw = completion.choices[0].message.content
+    
+    # Bersihkan markdown (```python ... ```)
+    code_clean = code_raw.replace("```python", "").replace("```", "").strip()
+    
+    # 3. Eksekusi Kode (Strategi 2: Execution Sandbox Sederhana)
+    # Kita siapkan dictionary lokal untuk menangkap variabel hasil
+    local_vars = {'df': df, 'plt': plt, 'sns': sns, 'pd': pd}
+    
+    try:
+        # Eksekusi kode yang dibuat AI
+        exec(code_clean, {}, local_vars)
+        
+        # Cek tipe output
+        tipe = local_vars.get('tipe_output', 'teks')
+        
+        if tipe == 'gambar':
+            return {'type': 'image', 'path': 'chart_output.png'}
+        else:
+            return {'type': 'text', 'content': local_vars.get('hasil_teks', 'Selesai, tapi variabel hasil_teks kosong.')}
+            
+    except Exception as e:
+        logging.error(f"Error Eksekusi Code: {e}")
+        logging.error(f"Code Bermasalah: {code_clean}")
+        return {'type': 'error', 'content': f"❌ Gagal hitung: {str(e)}"}
+
 # --- 6. MESSAGE HANDLER UTAMA ---
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -200,14 +283,80 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_input = update.message.text or ""
     
-    # --- CEK SALDO ---
-    keywords_saldo = ["saldo", "cek uang", "dompet", "keuanganku", "total uang", "balance"]
-    if user_input and any(k in user_input.lower() for k in keywords_saldo):
+    # [UPDATE] 1. DETEKSI INTENT ANALISA LEBIH LUAS
+    # Tambahkan keyword: "pengeluaran", "habis", "kemarin", "bulan ini"
+    keywords_analisa = [
+        "analisa", "grafik", "chart", "plot", "tren", "statistik", 
+        "berapa", "total", "bandingkan", "pengeluaran saya", 
+        "habis berapa", "kemarin", "bulan ini", "minggu ini"
+    ]
+    
+    # Logic: Jika ada keyword analisa DAN TIDAK mengandung format transaksi jelas (misal: angka dlm juta)
+    # Tujuannya agar "Berapa pengeluaran kemarin" masuk sini.
+    is_analisa = any(k in user_input.lower() for k in keywords_analisa)
+    
+    if is_analisa and len(user_input.split()) > 1:
+        
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+        msg = await update.message.reply_text("🧠 Sedang menganalisis data...")
+        
+        try:
+            print(f"--- DEBUG: Mode Analisa Triggered oleh '{user_input}' ---")
+            wks = get_gspread_client()
+            data = await asyncio.to_thread(wks.get_all_records)
+            
+            if not data:
+                await msg.edit_text("❌ Data kosong.")
+                return
+
+            df = pd.DataFrame(data)
+            
+            # Bersihkan Data
+            df.columns = [str(c).lower().strip() for c in df.columns]
+            
+            # Cari kolom harga (Logic Robust)
+            candidates = [c for c in df.columns if ('total' in c or 'amount' in c or 'harga' in c) and 'satuan' not in c]
+            col_harga = candidates[0] if candidates else df.columns[-1]
+            
+            # Bersihkan Angka
+            df[col_harga] = df[col_harga].astype(str).str.replace(r'[^\d-]', '', regex=True)
+            df[col_harga] = pd.to_numeric(df[col_harga], errors='coerce').fillna(0)
+
+            # Jalankan AI
+            hasil = await run_analysis(user_input, df)
+            
+            if hasil['type'] == 'image':
+                await update.message.reply_photo(photo=open(hasil['path'], 'rb'), caption="📊 Grafik Analisis")
+                await msg.delete()
+                os.remove(hasil['path'])
+            elif hasil['type'] == 'text':
+                await msg.edit_text(f"💡 **Hasil:**\n{hasil['content']}", parse_mode="Markdown")
+            else:
+                await msg.edit_text(hasil['content'])
+
+        except Exception as e:
+            import traceback
+            print(f"❌ ERROR ANALISA: {traceback.format_exc()}")
+            await msg.edit_text(f"Gagal analisa: {str(e)}")
+            
+        return # STOP, jangan lanjut ke pencatatan
+
+    # --- 2. CEK SALDO ---
+    keywords_saldo = ["saldo", "cek uang", "dompet", "keuanganku", "sisa uang"]
+    if any(k in user_input.lower() for k in keywords_saldo):
         await proses_cek_saldo(update, context)
         return
 
-    # --- CATAT TRANSAKSI ---
-    await proses_catat_transaksi(update, context)
+    # --- 3. CATAT TRANSAKSI (Dengan Anti-Crash) ---
+    # Jika lolos dari filter di atas, kita asumsikan ini transaksi.
+    # Tapi kita pasang Try-Except agar kalau bukan JSON, tidak crash.
+    try:
+        await proses_catat_transaksi(update, context)
+    except Exception as e:
+        print(f"❌ Error Transaksi: {e}")
+        # Jangan reply error ke user jika itu cuma chat iseng "Halo"
+        # Biarkan silent atau balas standar
+        await update.message.reply_text("🤔 Saya tidak mengerti. Apakah ini transaksi atau pertanyaan analisis?")
 
 async def proses_cek_saldo(update, context):
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
