@@ -9,7 +9,7 @@ dependencies = [
     "groq>=0.37.1",
     "gspread>=6.2.1",
     "pandas>=2.3.3",
-    "pillow>=12.0.0",
+    "pillow>=10.2.0",  # UBAH DARI >=12.0.0 KE >=10.2.0
     "python-dotenv>=1.2.1",
     "python-telegram-bot>=22.5",
     "pandasai>=2.2.0",
