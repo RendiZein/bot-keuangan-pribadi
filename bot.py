@@ -15,13 +15,17 @@ from groq import Groq
 import google.generativeai as genai
 import io
 import matplotlib
-matplotlib.use('Agg')
+matplotlib.use('Agg') # Wajib untuk server/VPS
 import matplotlib.pyplot as plt
 import seaborn as sns
 
 # --- PANDASAI IMPORTS ---
 from pandasai import SmartDataframe
-from pandasai.llm import GoogleGemini
+# FIX: Import path untuk PandasAI v3
+try:
+    from pandasai.llm import GoogleGemini
+except ImportError:
+    from pandasai.llm.google_gemini import GoogleGemini
 
 # --- 1. KONFIGURASI ENV & CLIENT ---
 load_dotenv()
