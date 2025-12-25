@@ -201,8 +201,7 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def setsaldo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) not in ALLOWED_USERS: return
-    
-    # Cek format: /setsaldo [kantong] [jumlah]
+
     if not context.args or len(context.args) < 2:
         await update.message.reply_text("⚠️ Format salah.\nGunakan: `/setsaldo [NamaKantong] [JumlahUang]`\nContoh: `/setsaldo BCA 1500000`", parse_mode="Markdown")
         return
@@ -219,53 +218,50 @@ async def setsaldo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not wks: return
 
     try:
-        # 1. Ambil data untuk hitung saldo sekarang
         data = await asyncio.to_thread(wks.get_all_records)
         df = pd.DataFrame(data)
-        
-        # Normalisasi kolom
         df.columns = [str(c).lower().strip() for c in df.columns]
-        
-        # Cari kolom harga & kantong yang valid
+
         col_harga = next((c for c in df.columns if 'total' in c or 'amount' in c or 'harga' in c if 'satuan' not in c), None)
-        
+
         if not col_harga or df.empty:
             current_saldo = 0
         else:
-            # Filter per kantong
-            df_k = df[df['kantong'].astype(str).str.lower() == target_kantong.lower()]
-            
-            # Bersihkan angka
+            # gunakan .loc + .copy() untuk menghindari SettingWithCopyWarning
+            mask = df['kantong'].astype(str).str.lower() == target_kantong.lower()
+            df_k = df.loc[mask].copy()
+
+            # bersihkan angka di salinan; hasilnya tetap pandas Series tapi kita cast ke int nanti
             df_k[col_harga] = pd.to_numeric(df_k[col_harga].astype(str).str.replace(r'[^\d-]', '', regex=True), errors='coerce').fillna(0)
-            
+
             masuk = df_k[df_k['tipe'].str.lower() == 'masuk'][col_harga].sum()
             keluar = df_k[df_k['tipe'].str.lower() == 'keluar'][col_harga].sum()
-            current_saldo = masuk - keluar
 
-        # 2. Hitung Selisih
+            # konversi ke Python int untuk menghindari numpy.int64
+            current_saldo = int(masuk - keluar)
+
         selisih = target_saldo - current_saldo
-        
+
         if selisih == 0:
             await msg.edit_text(f"✅ Saldo {target_kantong} sudah pas Rp {target_saldo:,}. Tidak ada perubahan.")
             return
 
-        # 3. Tentukan Tipe Koreksi
         tipe_transaksi = "Masuk" if selisih > 0 else "Keluar"
-        nominal_koreksi = abs(selisih)
-        
-        # 4. Catat Transaksi Penyesuaian
+        nominal_koreksi = int(abs(selisih))
+
         now = datetime.now()
         row = [
-            now.strftime("%Y-%m-%d"), 
-            now.strftime("%H:%M"), 
+            now.strftime("%Y-%m-%d"),
+            now.strftime("%H:%M"),
             tipe_transaksi,
-            target_kantong, 
-            "Koreksi Saldo Otomatis", # Nama Transaksi
-            "x", 1, 0, 
-            "Lainnya", # Kategori
-            nominal_koreksi # Harga Total
+            target_kantong,
+            "Koreksi Saldo Otomatis",
+            "x", 1, 0,
+            "Lainnya",
+            nominal_koreksi
         ]
-        
+
+        # Pastikan semua angka adalah Python int/str (nominal_koreksi sudah int)
         await asyncio.to_thread(wks.append_row, row)
         await msg.edit_text(
             f"✅ **Saldo Disesuaikan!**\n"
