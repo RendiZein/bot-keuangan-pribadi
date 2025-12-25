@@ -21,11 +21,7 @@ import seaborn as sns
 
 # --- PANDASAI IMPORTS ---
 from pandasai import SmartDataframe
-# FIX: Import path untuk PandasAI v3
-try:
-    from pandasai.llm import GoogleGemini
-except ImportError:
-    from pandasai.llm.google_gemini import GoogleGemini
+from pandasai.llm import GoogleGemini # Ini pasti jalan di 2.2.15
 
 # --- 1. KONFIGURASI ENV & CLIENT ---
 load_dotenv()
