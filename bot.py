@@ -572,6 +572,7 @@ if __name__ == '__main__':
     application.add_handler(MessageHandler(filter_all & (~filters.COMMAND), handle_message))
     application.add_handler(CommandHandler("undo", undo_command))
     application.add_handler(CommandHandler("reset", reset_command))
+    application.add_handler(CommandHandler("setsaldo", setsaldo_command))
     
     print("🚀 Bot Hybrid (Gemini Priority -> Groq Fallback) SIAP!...")
     application.run_polling()
