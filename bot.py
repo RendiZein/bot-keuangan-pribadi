@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import gspread
 import numpy as np # Tambahan untuk handling tipe data
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton # Tambah ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CommandHandler
 from dotenv import load_dotenv
 from groq import Groq
@@ -97,6 +97,15 @@ def get_system_prompt():
     {{ "transaksi": [ {{ "tanggal": "YYYY-MM-DD", "jam": "HH:MM", "tipe": "Masuk/Keluar", "kantong": "...", "nama": "...", "satuan": "x", "volume": 1, "harga_satuan": 0, "kategori": "...", "harga_total": 0 }} ] }}
     """
 
+async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Menampilkan menu utama dengan tombol."""
+    keyboard = [
+        [KeyboardButton("💰 Cek Saldo"), KeyboardButton("📊 Analisis")],
+        [KeyboardButton("↩️ Undo Terakhir"), KeyboardButton("❓ Bantuan")]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text("🤖 **Menu Utama:**\nSilakan pilih opsi atau ketik transaksi langsung.", reply_markup=reply_markup, parse_mode="Markdown")
+
 # --- 4. CORE AI LOGIC (HYBRID) ---
 
 async def call_gemini(text, image_path=None):
@@ -169,6 +178,32 @@ async def smart_ai_processing(text, image_path=None):
     return json_result, source
 
 # --- 5. COMMAND HANDLERS ---
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if str(update.effective_user.id) not in ALLOWED_USERS: 
+        await update.message.reply_text("⛔ Akses Ditolak.")
+        return
+    await show_menu(update, context)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = """
+    📚 **Panduan Bot Keuangan**
+    
+    1. **Catat Transaksi**:
+       - Ketik: "Beli nasi goreng 15rb"
+       - Kirim Foto Struk
+       - Kirim Voice Note
+       
+    2. **Perintah**:
+       - `/setsaldo [Kantong] [Jumlah]` : Koreksi saldo
+       - `/undo` : Hapus transaksi terakhir
+       - `/reset confirm` : Hapus SEMUA data
+       
+    3. **Analisis**:
+       - "Pengeluaran bulan ini berapa?"
+       - "Grafik makan minggu lalu"
+    """
+    await update.message.reply_text(help_text, parse_mode="Markdown")
 
 async def undo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) not in ALLOWED_USERS: return
@@ -340,6 +375,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_input = update.message.text or ""
     
+    # --- 0. MENU HANDLER ---
+    if user_input == "💰 Cek Saldo":
+        await proses_cek_saldo(update, context)
+        return
+    elif user_input == "↩️ Undo Terakhir":
+        await undo_command(update, context)
+        return
+    elif user_input == "❓ Bantuan":
+        await help_command(update, context)
+        return
+    elif user_input == "📊 Analisis":
+        await update.message.reply_text("💡 Silakan ketik pertanyaan analisis Anda.\nContoh: _'Berapa pengeluaran makan bulan ini?'_", parse_mode="Markdown")
+        return
+
     # [UPDATE] 1. DETEKSI INTENT ANALISA
     keywords_analisa = [
         "analisa", "grafik", "chart", "plot", "tren", "statistik", 
@@ -539,6 +588,10 @@ if __name__ == '__main__':
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
     filter_all = filters.TEXT | filters.PHOTO | filters.VOICE
+    application.add_handler(CommandHandler("start", start_command)) # Tambah start handler
+    application.add_handler(CommandHandler("menu", start_command))  # Alias menu
+    application.add_handler(CommandHandler("help", help_command))   # Tambah help handler
+    
     application.add_handler(MessageHandler(filter_all & (~filters.COMMAND), handle_message))
     application.add_handler(CommandHandler("undo", undo_command))
     application.add_handler(CommandHandler("reset", reset_command))
