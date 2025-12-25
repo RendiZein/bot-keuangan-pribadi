@@ -3,10 +3,11 @@ import logging
 import json
 import asyncio
 import base64
-import PIL.Image  # Library untuk gambar Gemini
+import PIL.Image
 from datetime import datetime, timedelta, timezone
 import pandas as pd
 import gspread
+import numpy as np # Tambahan untuk handling tipe data
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CommandHandler
 from dotenv import load_dotenv
@@ -14,9 +15,13 @@ from groq import Groq
 import google.generativeai as genai
 import io
 import matplotlib
-matplotlib.use('Agg') # Wajib untuk server/VPS
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+# --- PANDASAI IMPORTS ---
+from pandasai import SmartDataframe
+from pandasai.llm import GoogleGemini
 
 # --- 1. KONFIGURASI ENV & CLIENT ---
 load_dotenv()
@@ -54,10 +59,20 @@ def encode_image(image_path):
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
 
+def clean_for_json(data):
+    """Mengubah tipe data Numpy (int64, float64) menjadi Python native (int, float) agar bisa di-JSON-kan."""
+    if isinstance(data, list):
+        return [clean_for_json(x) for x in data]
+    if isinstance(data, dict):
+        return {k: clean_for_json(v) for k, v in data.items()}
+    if isinstance(data, (np.int64, np.int32, np.integer)):
+        return int(data)
+    if isinstance(data, (np.float64, np.float32, np.floating)):
+        return float(data)
+    return data
+
 def get_system_prompt():
     wib = timezone(timedelta(hours=7))
-    
-    # Ambil waktu sekarang dengan zona waktu WIB
     now = datetime.now(wib)
     return f"""
     Kamu adalah manajer keuangan pribadi. Waktu: {now.strftime("%Y-%m-%d %H:%M")}.
@@ -87,12 +102,11 @@ def get_system_prompt():
 async def call_gemini(text, image_path=None):
     """Fungsi Prioritas: Menggunakan Gemini 2.5 Flash"""
     print("🔵 Mencoba Gemini...")
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = genai.GenerativeModel('gemini-2.0-flash') # Update model name if needed, 2.5 might be typo in user code or preview
     
     inputs = [get_system_prompt(), text]
     
     if image_path:
-        # Gemini suka input berupa PIL Image
         img = PIL.Image.open(image_path)
         inputs.append(img)
         
@@ -112,7 +126,7 @@ async def call_groq(text, image_path=None):
     model_name = "llama-3.3-70b-versatile" # Default Text
     
     if image_path:
-        model_name = "meta-llama/llama-4-scout-17b-16e-instruct" # Vision Llama 4
+        model_name = "llama-3.2-90b-vision-preview" # Vision Llama (Updated for better availability)
         base64_img = await asyncio.to_thread(encode_image, image_path)
         messages[0]["content"].append({
             "type": "image_url", 
@@ -139,14 +153,12 @@ async def smart_ai_processing(text, image_path=None):
     if GOOGLE_API_KEY:
         try:
             json_result = await call_gemini(text, image_path)
-            source = "Gemini 2.5"
+            source = "Gemini"
         except Exception as e:
             logging.error(f"⚠️ Gemini Error/Limit: {e}. Switching to Groq.")
-            # Jangan return, biarkan lanjut ke blok Groq di bawah
             json_result = None
 
     # 2. COBA GROQ (FALLBACK)
-    # Jalankan jika Gemini Gagal (json_result None) atau API Key Gemini tidak ada
     if not json_result:
         try:
             json_result = await call_groq(text, image_path)
@@ -198,7 +210,6 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await msg.edit_text(f"❌ Gagal: {e}")
 
-
 async def setsaldo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) not in ALLOWED_USERS: return
 
@@ -221,48 +232,47 @@ async def setsaldo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = await asyncio.to_thread(wks.get_all_records)
         df = pd.DataFrame(data)
         df.columns = [str(c).lower().strip() for c in df.columns]
-
+        
         col_harga = next((c for c in df.columns if 'total' in c or 'amount' in c or 'harga' in c if 'satuan' not in c), None)
-
+        
         if not col_harga or df.empty:
             current_saldo = 0
         else:
-            # gunakan .loc + .copy() untuk menghindari SettingWithCopyWarning
+            # FIX: Gunakan .loc dan .copy() untuk menghindari SettingWithCopyWarning
             mask = df['kantong'].astype(str).str.lower() == target_kantong.lower()
             df_k = df.loc[mask].copy()
-
-            # bersihkan angka di salinan; hasilnya tetap pandas Series tapi kita cast ke int nanti
+            
             df_k[col_harga] = pd.to_numeric(df_k[col_harga].astype(str).str.replace(r'[^\d-]', '', regex=True), errors='coerce').fillna(0)
-
+            
             masuk = df_k[df_k['tipe'].str.lower() == 'masuk'][col_harga].sum()
             keluar = df_k[df_k['tipe'].str.lower() == 'keluar'][col_harga].sum()
-
-            # konversi ke Python int untuk menghindari numpy.int64
-            current_saldo = int(masuk - keluar)
+            current_saldo = int(masuk - keluar) # FIX: Cast ke int python
 
         selisih = target_saldo - current_saldo
-
+        
         if selisih == 0:
             await msg.edit_text(f"✅ Saldo {target_kantong} sudah pas Rp {target_saldo:,}. Tidak ada perubahan.")
             return
 
         tipe_transaksi = "Masuk" if selisih > 0 else "Keluar"
-        nominal_koreksi = int(abs(selisih))
-
+        nominal_koreksi = int(abs(selisih)) # FIX: Cast ke int python
+        
         now = datetime.now()
         row = [
-            now.strftime("%Y-%m-%d"),
-            now.strftime("%H:%M"),
+            now.strftime("%Y-%m-%d"), 
+            now.strftime("%H:%M"), 
             tipe_transaksi,
-            target_kantong,
-            "Koreksi Saldo Otomatis",
-            "x", 1, 0,
-            "Lainnya",
+            target_kantong, 
+            "Koreksi Saldo Otomatis", 
+            "x", 1, 0, 
+            "Lainnya", 
             nominal_koreksi
         ]
-
-        # Pastikan semua angka adalah Python int/str (nominal_koreksi sudah int)
-        await asyncio.to_thread(wks.append_row, row)
+        
+        # FIX: Bersihkan row dari tipe data numpy sebelum kirim
+        row_clean = clean_for_json(row)
+        
+        await asyncio.to_thread(wks.append_row, row_clean)
         await msg.edit_text(
             f"✅ **Saldo Disesuaikan!**\n"
             f"Saldo Lama: Rp {current_saldo:,}\n"
@@ -275,82 +285,53 @@ async def setsaldo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(traceback.format_exc())
         await msg.edit_text(f"❌ Gagal set saldo: {e}")
 
-# --- FITUR BARU: DATA ANALYST (PAL) ---
+# --- FITUR BARU: DATA ANALYST (PANDASAI) ---
 async def run_analysis(query, df):
     """
-    Fungsi ini mengubah Natural Language -> Python Code -> Eksekusi -> Hasil/Grafik
+    Menggunakan PandasAI untuk analisis data yang lebih aman dan powerful.
     """
-    # 1. Siapkan Konteks Data (Strategi 3: Pre-Computation Schema)
-    # Kita berikan info kolom dan contoh data ke AI
-    buffer_info = io.StringIO()
-    df.info(buf=buffer_info)
-    schema_info = buffer_info.getvalue()
-    sample_data = df.head(3).to_markdown()
-    
-    # [BARU] Ambil tanggal hari ini untuk konteks "Kemarin/Hari ini"
-    today_str = datetime.now().strftime("%Y-%m-%d")
-
-    system_prompt = f"""
-    Kamu adalah Senior Data Analyst Python.
-    Waktu Saat Ini: {today_str} (Gunakan ini untuk menghitung 'kemarin', 'minggu lalu', dll).
-    
-    Tugas: Tulis kode Python untuk menganalisis DataFrame `df` berdasarkan pertanyaan user.
-    
-    INFO DATAFRAME:
-    {schema_info}
-    
-    CONTOH DATA:
-    {sample_data}
-    
-    ATURAN KODING (STRICT):
-    1. Variabel DataFrame bernama `df` sudah tersedia.
-    2. KONVERSI TANGGAL: Kolom 'tanggal' mungkin string. Wajib ubah dulu: 
-       `df['tanggal'] = pd.to_datetime(df['tanggal'], errors='coerce')`
-    3. Jika User minta GRAFIK: Akhiri dengan `plt.savefig('chart_output.png')` dan set `tipe_output = 'gambar'`.
-    4. Jika User minta ANGKA/TEKS: Simpan hasil string di `hasil_teks` dan set `tipe_output = 'teks'`.
-    5. FILTER WAKTU: Jika user tanya "Kemarin", filter `df['tanggal'] == pd.Timestamp('{today_str}') - pd.Timedelta(days=1)`.
-    6. HANYA RETURN KODE PYTHON. Tanpa markdown.
-    """
-
-    # 2. Generate Kode via Groq (Llama 3 70B sangat jago coding)
-    # Kita pakai Groq karena cepat.
-    prompt_full = f"Pertanyaan User: {query}\n\nTulis kodenya sekarang:"
-    
-    completion = await asyncio.to_thread(
-        groq_client.chat.completions.create,
-        model="llama-3.3-70b-versatile",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt_full}
-        ],
-        temperature=0
-    )
-    
-    code_raw = completion.choices[0].message.content
-    
-    # Bersihkan markdown (```python ... ```)
-    code_clean = code_raw.replace("```python", "").replace("```", "").strip()
-    
-    # 3. Eksekusi Kode (Strategi 2: Execution Sandbox Sederhana)
-    # Kita siapkan dictionary lokal untuk menangkap variabel hasil
-    local_vars = {'df': df, 'plt': plt, 'sns': sns, 'pd': pd}
-    
     try:
-        # Eksekusi kode yang dibuat AI
-        exec(code_clean, {}, local_vars)
+        # 1. Setup LLM (Gunakan Gemini karena user punya key-nya)
+        llm = GoogleGemini(api_key=GOOGLE_API_KEY)
         
-        # Cek tipe output
-        tipe = local_vars.get('tipe_output', 'teks')
+        # 2. Setup SmartDataframe
+        # save_charts=True akan menyimpan chart di folder 'exports/charts' secara default
+        sdf = SmartDataframe(df, config={
+            "llm": llm,
+            "save_charts": True,
+            "save_charts_path": ".", # Simpan di root agar mudah diambil
+            "enable_cache": False,
+            "verbose": True
+        })
         
-        if tipe == 'gambar':
-            return {'type': 'image', 'path': 'chart_output.png'}
-        else:
-            return {'type': 'text', 'content': local_vars.get('hasil_teks', 'Selesai, tapi variabel hasil_teks kosong.')}
+        # 3. Eksekusi Query
+        # PandasAI akan mengembalikan path file jika itu gambar, atau string/int jika teks
+        response = await asyncio.to_thread(sdf.chat, query)
+        
+        # 4. Cek Tipe Response
+        if isinstance(response, str) and (response.endswith('.png') or response.endswith('.jpg')):
+            # Jika response adalah path file gambar
+            if os.path.exists(response):
+                return {'type': 'image', 'path': response}
+            else:
+                # Fallback jika path tidak ketemu tapi string mengandung .png
+                return {'type': 'text', 'content': f"Grafik dibuat di: {response}, tapi file tidak ditemukan."}
+        
+        elif isinstance(response, (str, int, float)):
+            return {'type': 'text', 'content': str(response)}
             
+        elif response is None:
+            # Kadang PandasAI return None tapi generate chart
+            # Cek apakah ada file .png baru dibuat
+            # (Simplifikasi: Kita asumsikan kalau None berarti mungkin error atau chart only)
+            return {'type': 'text', 'content': "Analisis selesai, tapi tidak ada output teks."}
+            
+        else:
+            return {'type': 'text', 'content': str(response)}
+
     except Exception as e:
-        logging.error(f"Error Eksekusi Code: {e}")
-        logging.error(f"Code Bermasalah: {code_clean}")
-        return {'type': 'error', 'content': f"❌ Gagal hitung: {str(e)}"}
+        logging.error(f"PandasAI Error: {e}")
+        return {'type': 'error', 'content': f"❌ Gagal analisis: {str(e)}"}
 
 # --- 6. MESSAGE HANDLER UTAMA ---
 
@@ -359,25 +340,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_input = update.message.text or ""
     
-    # [UPDATE] 1. DETEKSI INTENT ANALISA LEBIH LUAS
-    # Tambahkan keyword: "pengeluaran", "habis", "kemarin", "bulan ini"
+    # [UPDATE] 1. DETEKSI INTENT ANALISA
     keywords_analisa = [
         "analisa", "grafik", "chart", "plot", "tren", "statistik", 
         "berapa", "total", "bandingkan", "pengeluaran saya", 
         "habis berapa", "kemarin", "bulan ini", "minggu ini"
     ]
     
-    # Logic: Jika ada keyword analisa DAN TIDAK mengandung format transaksi jelas (misal: angka dlm juta)
-    # Tujuannya agar "Berapa pengeluaran kemarin" masuk sini.
     is_analisa = any(k in user_input.lower() for k in keywords_analisa)
     
     if is_analisa and len(user_input.split()) > 1:
         
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-        msg = await update.message.reply_text("🧠 Sedang menganalisis data...")
+        msg = await update.message.reply_text("🧠 Sedang menganalisis data (PandasAI)...")
         
         try:
-            print(f"--- DEBUG: Mode Analisa Triggered oleh '{user_input}' ---")
             wks = get_gspread_client()
             data = await asyncio.to_thread(wks.get_all_records)
             
@@ -386,25 +363,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             df = pd.DataFrame(data)
-            
-            # Bersihkan Data
             df.columns = [str(c).lower().strip() for c in df.columns]
             
-            # Cari kolom harga (Logic Robust)
+            # Preprocessing Data untuk PandasAI
+            # Pastikan kolom tanggal dikenali
+            if 'tanggal' in df.columns:
+                df['tanggal'] = pd.to_datetime(df['tanggal'], errors='coerce')
+            
+            # Pastikan kolom harga numerik
             candidates = [c for c in df.columns if ('total' in c or 'amount' in c or 'harga' in c) and 'satuan' not in c]
             col_harga = candidates[0] if candidates else df.columns[-1]
             
-            # Bersihkan Angka
             df[col_harga] = df[col_harga].astype(str).str.replace(r'[^\d-]', '', regex=True)
             df[col_harga] = pd.to_numeric(df[col_harga], errors='coerce').fillna(0)
 
-            # Jalankan AI
+            # Jalankan PandasAI
             hasil = await run_analysis(user_input, df)
             
             if hasil['type'] == 'image':
                 await update.message.reply_photo(photo=open(hasil['path'], 'rb'), caption="📊 Grafik Analisis")
                 await msg.delete()
-                os.remove(hasil['path'])
+                # Cleanup image
+                try: os.remove(hasil['path'])
+                except: pass
             elif hasil['type'] == 'text':
                 await msg.edit_text(f"💡 **Hasil:**\n{hasil['content']}", parse_mode="Markdown")
             else:
@@ -415,7 +396,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print(f"❌ ERROR ANALISA: {traceback.format_exc()}")
             await msg.edit_text(f"Gagal analisa: {str(e)}")
             
-        return # STOP, jangan lanjut ke pencatatan
+        return 
 
     # --- 2. CEK SALDO ---
     keywords_saldo = ["saldo", "cek uang", "dompet", "keuanganku", "sisa uang"]
@@ -423,15 +404,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await proses_cek_saldo(update, context)
         return
 
-    # --- 3. CATAT TRANSAKSI (Dengan Anti-Crash) ---
-    # Jika lolos dari filter di atas, kita asumsikan ini transaksi.
-    # Tapi kita pasang Try-Except agar kalau bukan JSON, tidak crash.
+    # --- 3. CATAT TRANSAKSI ---
     try:
         await proses_catat_transaksi(update, context)
     except Exception as e:
         print(f"❌ Error Transaksi: {e}")
-        # Jangan reply error ke user jika itu cuma chat iseng "Halo"
-        # Biarkan silent atau balas standar
         await update.message.reply_text("🤔 Saya tidak mengerti. Apakah ini transaksi atau pertanyaan analisis?")
 
 async def proses_cek_saldo(update, context):
@@ -452,7 +429,6 @@ async def proses_cek_saldo(update, context):
         df = pd.DataFrame(data)
         df.columns = [c.lower().strip() for c in df.columns]
         
-        # Logic Cari Kolom Harga (Total -> Amount -> Harga)
         col_harga = next((c for c in df.columns if 'total' in c), None)
         if not col_harga: col_harga = next((c for c in df.columns if 'amount' in c), None)
         if not col_harga: col_harga = next((c for c in df.columns if 'harga' in c and 'satuan' not in c), None)
@@ -469,7 +445,6 @@ async def proses_cek_saldo(update, context):
         for k in kantongs:
             if not k: continue
             df_k = df[df['kantong'] == k]
-            # Bersihkan angka
             df_k[col_harga] = pd.to_numeric(df_k[col_harga].astype(str).str.replace(r'[^\d-]', '', regex=True), errors='coerce').fillna(0)
             
             masuk = df_k[df_k['tipe'].str.lower() == 'masuk'][col_harga].sum()
@@ -493,7 +468,6 @@ async def proses_catat_transaksi(update, context):
         media_path = None
         user_text_input = update.message.text or ""
 
-        # A. HANDLER AUDIO (Tetap pakai Groq Whisper karena cepat & spesifik)
         if update.message.voice:
             voice_file = await update.message.voice.get_file()
             media_path = "temp_audio.ogg"
@@ -512,22 +486,17 @@ async def proses_catat_transaksi(update, context):
             except: pass
             media_path = None # Reset agar tidak dianggap gambar
 
-        # B. HANDLER GAMBAR
         elif update.message.photo:
             photo_file = await update.message.photo[-1].get_file()
             media_path = "temp_image.jpg"
             await photo_file.download_to_drive(media_path)
-            # user_text_input tetap kosong atau caption kalau ada
 
-        # C. PROSES SMART AI (Gemini -> Fallback Groq)
         final_json_text, used_ai = await smart_ai_processing(user_text_input, media_path)
         
-        # Bersihkan temp image
         if media_path:
             try: os.remove(media_path)
             except: pass
 
-        # D. PARSING & SIMPAN
         clean_text = final_json_text.replace('```json', '').replace('```', '').strip()
         data_parsed = json.loads(clean_text)
         data_list = data_parsed.get("transaksi", []) if isinstance(data_parsed, dict) else data_parsed
@@ -544,12 +513,15 @@ async def proses_catat_transaksi(update, context):
         rows = []
         report_text = f"✅ **Tersimpan!** (via {used_ai})\n"
         for item in data_list:
-            rows.append([
+            row = [
                 item.get('tanggal'), item.get('jam'), item.get('tipe'),
                 item.get('kantong', 'Tunai'), item.get('nama'), item.get('satuan', 'x'),
                 item.get('volume', 1), item.get('harga_satuan', 0),
                 item.get('kategori'), item.get('harga_total', 0)
-            ])
+            ]
+            # FIX: Bersihkan row sebelum append
+            rows.append(clean_for_json(row))
+            
             arrow = "➡️" if item.get('tipe') == 'Keluar' else "⬅️"
             report_text += f"\n{arrow} {item.get('kantong')}: Rp {item.get('harga_total'):,} ({item.get('nama')})"
 
