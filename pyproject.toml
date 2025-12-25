@@ -8,9 +8,9 @@ dependencies = [
     "google-generativeai>=0.8.5",
     "groq>=0.37.1",
     "gspread>=6.2.1",
-    "pandas>=2.3.3",
+    "pandas>=1.5.0", # UBAH DARI >=2.3.3 KE >=1.5.0
     "pillow>=10.2.0",
     "python-dotenv>=1.2.1",
     "python-telegram-bot>=22.5",
-    "pandasai==2.2.15", # UBAH KE VERSI INI
+    "pandasai==2.2.15",
 ]
