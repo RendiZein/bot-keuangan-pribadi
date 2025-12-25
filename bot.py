@@ -444,7 +444,9 @@ async def proses_cek_saldo(update, context):
         
         for k in kantongs:
             if not k: continue
-            df_k = df[df['kantong'] == k]
+            # FIX: Tambahkan .copy() di sini untuk menghindari SettingWithCopyWarning
+            df_k = df[df['kantong'] == k].copy()
+            
             df_k[col_harga] = pd.to_numeric(df_k[col_harga].astype(str).str.replace(r'[^\d-]', '', regex=True), errors='coerce').fillna(0)
             
             masuk = df_k[df_k['tipe'].str.lower() == 'masuk'][col_harga].sum()
