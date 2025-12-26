@@ -362,7 +362,7 @@ async def run_analysis(query, df):
     """
     try:
         # 1. Setup LLM (Gunakan Gemini karena user punya key-nya)
-        llm = GoogleGemini(api_key=GOOGLE_API_KEY)
+        llm = GoogleGemini(api_key=GOOGLE_API_KEY, model="gemini-2.0-flash")
         
         # 2. Setup SmartDataframe
         # save_charts=True akan menyimpan chart di folder 'exports/charts' secara default
