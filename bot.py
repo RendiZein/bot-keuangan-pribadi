@@ -135,9 +135,9 @@ async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- 4. CORE AI LOGIC (HYBRID) ---
 
 async def call_gemini(text, image_path=None):
-    """Fungsi Prioritas: Menggunakan Gemini 2.5 Flash"""
+    """Fungsi Prioritas: Menggunakan Gemini 1.5 Flash"""
     print("🔵 Mencoba Gemini...")
-    model = genai.GenerativeModel('gemini-2.0-flash') # Update model name if needed, 2.5 might be typo in user code or preview
+    model = genai.GenerativeModel('gemini-1.5-flash-latest') # Update model name if needed
     
     inputs = [get_system_prompt(), text]
     
@@ -362,7 +362,7 @@ async def run_analysis(query, df):
     """
     try:
         # 1. Setup LLM (Gunakan Gemini karena user punya key-nya)
-        llm = GoogleGemini(api_key=GOOGLE_API_KEY, model="gemini-2.0-flash")
+        llm = GoogleGemini(api_key=GOOGLE_API_KEY, model="models/gemini-1.5-flash-latest")
         
         # 2. Setup SmartDataframe
         # save_charts=True akan menyimpan chart di folder 'exports/charts' secara default
