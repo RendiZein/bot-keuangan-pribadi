@@ -7,7 +7,7 @@ build/
 dist/
 wheels/
 *.egg-info
-
+GEMINI.md
 
 # Virtual environments
 .venv
