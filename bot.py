@@ -97,6 +97,32 @@ def get_system_prompt():
     {{ "transaksi": [ {{ "tanggal": "YYYY-MM-DD", "jam": "HH:MM", "tipe": "Masuk/Keluar", "kantong": "...", "nama": "...", "satuan": "x", "volume": 1, "harga_satuan": 0, "kategori": "...", "harga_total": 0 }} ] }}
     """
 
+async def get_correct_kantong_case(wks, new_kantong_name):
+    """Mencari nama kantong yang benar (case-insensitive) atau mengembalikan input asli."""
+    try:
+        # Asumsi kolom 'kantong' adalah kolom ke-4 (gspread uses 1-based index)
+        all_kantong_values = await asyncio.to_thread(wks.col_values, 4)
+        
+        # Buat set unik dari baris ke-2 dst (abaikan header)
+        existing_kantongs = set(all_kantong_values[1:])
+        
+        # Buat mapping lowercase -> original case
+        kantong_map = {k.lower(): k for k in existing_kantongs if k}
+        
+        # Cari match case-insensitive
+        corrected_name = kantong_map.get(new_kantong_name.lower())
+        
+        if corrected_name:
+            return corrected_name # Kembalikan nama kantong yg sudah ada
+        else:
+            # Jika baru, seragamkan ke Title Case (contoh: "shopeepay" -> "Shopeepay")
+            return new_kantong_name.title()
+            
+    except Exception as e:
+        logging.error(f"Gagal get/correct kantong case: {e}")
+        # Fallback aman jika GSheets error, tetap format ke Title Case
+        return new_kantong_name.title()
+
 async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Menampilkan menu utama dengan tombol."""
     keyboard = [
@@ -289,6 +315,9 @@ async def setsaldo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"✅ Saldo {target_kantong} sudah pas Rp {target_saldo:,}. Tidak ada perubahan.")
             return
 
+        # Dapatkan nama kantong yang benar sebelum membuat transaksi koreksi
+        corrected_kantong = await get_correct_kantong_case(wks, target_kantong)
+
         tipe_transaksi = "Masuk" if selisih > 0 else "Keluar"
         nominal_koreksi = int(abs(selisih)) # FIX: Cast ke int python
         
@@ -297,7 +326,7 @@ async def setsaldo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             now.strftime("%Y-%m-%d"), 
             now.strftime("%H:%M"), 
             tipe_transaksi,
-            target_kantong, 
+            corrected_kantong, 
             "Koreksi Saldo Otomatis", 
             "x", 1, 0, 
             "Lainnya", 
@@ -563,20 +592,31 @@ async def proses_catat_transaksi(update, context):
 
         rows = []
         report_text = f"✅ **Tersimpan!** (via {used_ai})\n"
+        
+        # Proses setiap item untuk memperbaiki 'kantong'
         for item in data_list:
+            raw_kantong = item.get('kantong', 'Tunai')
+            # Panggil helper function untuk koreksi case
+            corrected_kantong = await get_correct_kantong_case(wks, raw_kantong)
+            
+            # Update item dengan kantong yg benar (untuk laporan) dan buat row
+            item['kantong'] = corrected_kantong # Ini penting untuk report_text
+            
             row = [
                 item.get('tanggal'), item.get('jam'), item.get('tipe'),
-                item.get('kantong', 'Tunai'), item.get('nama'), item.get('satuan', 'x'),
+                corrected_kantong, item.get('nama'), item.get('satuan', 'x'),
                 item.get('volume', 1), item.get('harga_satuan', 0),
                 item.get('kategori'), item.get('harga_total', 0)
             ]
-            # FIX: Bersihkan row sebelum append
+            
             rows.append(clean_for_json(row))
             
             arrow = "➡️" if item.get('tipe') == 'Keluar' else "⬅️"
             report_text += f"\n{arrow} {item.get('kantong')}: Rp {item.get('harga_total'):,} ({item.get('nama')})"
 
-        await asyncio.to_thread(wks.append_rows, rows)
+        if rows:
+            await asyncio.to_thread(wks.append_rows, rows)
+        
         await msg.edit_text(report_text)
 
     except Exception as e:
