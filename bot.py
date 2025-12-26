@@ -241,16 +241,22 @@ async def undo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        all_values = await asyncio.to_thread(wks.get_all_values)
-        if len(all_values) <= 1:
+        # New, more robust logic
+        num_rows = await asyncio.to_thread(lambda: wks.row_count)
+        if num_rows <= 1:
             await msg.edit_text("⚠️ Data kosong.")
             return
-        
+
+        last_row_data = await asyncio.to_thread(wks.row_values, num_rows)
         last_item = "Item"
-        try: last_item = all_values[-1][4]
-        except: pass
-        
-        await asyncio.to_thread(wks.delete_rows, len(all_values))
+        try:
+            # Kolom ke-5 (index 4) adalah 'nama'
+            if len(last_row_data) > 4:
+                last_item = last_row_data[4]
+        except IndexError:
+            pass
+
+        await asyncio.to_thread(wks.delete_rows, num_rows)
         await msg.edit_text(f"✅ **Undo:** _{last_item}_ dihapus.", parse_mode="Markdown")
     except Exception as e:
         await msg.edit_text(f"❌ Error: {e}")
@@ -582,7 +588,7 @@ async def proses_catat_transaksi(update, context):
         data_list = data_parsed.get("transaksi", []) if isinstance(data_parsed, dict) else data_parsed
 
         if not data_list:
-            await msg.edit_text(f"⚠️ {used_ai} tidak mengerti data ini.")
+            await msg.edit_text("🤔 Maaf, saya tidak dapat menemukan detail transaksi dari pesan Anda.")
             return
 
         wks = get_gspread_client()
