@@ -66,11 +66,15 @@ async def macrodroid_webhook(request: Request, x_secret_token: str = Header(None
     
     # Hanya kirim notifikasi jika ada hasil (tidak kosong)
     if result_text and ALLOWED_USERS:
-        try:
-            target_chat_id = ALLOWED_USERS[0]
-            await ptb_application.bot.send_message(chat_id=target_chat_id, text=f"📩 **Notif Masuk:**\n{result_text}", parse_mode="Markdown")
-        except Exception as e:
-            logging.error(f"Gagal kirim notif telegram: {e}")
+        for user_id in ALLOWED_USERS:
+            try:
+                await ptb_application.bot.send_message(
+                    chat_id=user_id, 
+                    text=f"📩 **Notif Masuk:**\n{result_text}", 
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logging.error(f"Gagal kirim notif telegram ke {user_id}: {e}")
             
     return {"status": "success", "result": result_text}
 
