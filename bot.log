@@ -1,0 +1,5 @@
+2026-01-12 02:27:44,595 - telegram.ext.Application - INFO - Application started
+2026-01-12 02:27:44,785 - root - INFO - 🚀 Bot Hybrid (Telegram + Webhook) STARTED!
+2026-01-12 02:38:43,724 - root - INFO - 🛑 Stopping Bot...
+2026-01-12 02:38:44,587 - telegram.ext.Application - INFO - Application is stopping. This might take a moment.
+2026-01-12 02:38:44,588 - telegram.ext.Application - INFO - Application.stop() complete

@@ -1,0 +1,25 @@
+[Unit]
+Description=Bot Keuangan Pribadi (FastAPI + Telegram)
+After=network.target
+
+[Service]
+# Username Linux di VM
+User=rhendiya
+Group=rhendiya
+
+# Folder Proyek
+WorkingDirectory=/home/rhendiya/bot-keuangan-pribadi
+
+# Command Eksekusi
+ExecStart=/home/rhendiya/.local/bin/uv run python main.py
+
+# Restart Policy
+Restart=always
+RestartSec=5
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
