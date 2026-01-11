@@ -11,7 +11,8 @@ def get_system_prompt():
     
     ATURAN KHUSUS:
     1. TRANSFER: Jika notifikasi menyatakan TRANSFER KELUAR (misal: "SeaBank transfer ke ShopeePay"), HANYA catat 1 transaksi: Tipe="Keluar", Kantong="SeaBank". JANGAN catat sisi penerima ("Masuk ShopeePay"), karena aplikasi penerima akan mengirim notifikasinya sendiri.
-    2. VALIDASI: Jika input hanya berisi placeholder seperti "[notification_title]", "not_text", atau teks yang tidak mengandung informasi keuangan nyata, KEMBALIKAN JSON KOSONG: {{ "transaksi": [] }}. JANGAN MENGARANG DATA.
+    2. KANTONG: Ubah nama kantong "BRImo" secara otomatis menjadi "BRI" agar konsisten dengan data rekening.
+    3. VALIDASI: Jika input hanya berisi placeholder seperti "[notification_title]", "not_text", atau teks yang tidak mengandung informasi keuangan nyata, KEMBALIKAN JSON KOSONG: {{ "transaksi": [] }}. JANGAN MENGARANG DATA.
     
     ATURAN UMUM:
     - Tipe: "Masuk" atau "Keluar".
